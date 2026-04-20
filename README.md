@@ -65,15 +65,15 @@ Performance improved over time:
 - Early training reward ≈ -60
 - Final reward ≈ -15
 
-This shows the agent learned basic navigation and obstacle avoidance, though results were inconsistent.
+This shows the agent learned basic navigation and obstacle avoidance.
 
 ## Key Files
-KartAgent.cs – Main RL agent logic (observations, actions, rewards)
-Training logs – Show reward progression and learning trends
+KartAgent.cs – Main RL agent logic (observations, actions, rewards)  
+Training logs – Show reward progression and learning trends  
 Final model (.onnx) – Trained neural network
 ## Limitations
-Performance is inconsistent across episodes
-Agent trained on only one environment (limited generalization)
+Performance is inconsistent across episodes  
+Agent trained on only one environment (limited generalization)  
 Physics-based environment introduces variability
 ## Future Improvements
 - Train on multiple tracks for better generalization
