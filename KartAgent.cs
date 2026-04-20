@@ -1,0 +1,206 @@
+using System;
+using UnityEngine;
+using Unity.MLAgents;
+using Unity.MLAgents.Actuators;
+using Unity.MLAgents.Sensors;
+
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(KART))]
+public class KartAgent : Agent
+{
+    //unity scene refernces and settings.
+    [Header("References")]
+    [SerializeField] private Transform target;
+    [SerializeField] private Transform spawnPoint;
+    [SerializeField] private LayerMask wallMask;
+    [SerializeField] private KartEpisodeManager episodeManager;
+
+    [Header("Rewards")]
+    [SerializeField] private float distanceRewardScale = 0.02f;
+    [SerializeField] private float closenessRewardScale = 0.005f;
+    [SerializeField] private float wallHitPenalty = -0.02f;
+    [SerializeField] private float targetReward = 2.0f;
+    [SerializeField] private float failPenalty = -1.0f;
+    [SerializeField] private float timePenalty = -0.001f;
+    [SerializeField] private float stallPenalty = -0.002f;
+
+    [Header("Observation Scaling")]
+    [SerializeField] private float maxSpeed = 20f;
+    [SerializeField] private float maxAngularSpeed = 10f;
+    [SerializeField] private float maxTargetDistance = 100f;
+
+    private Rigidbody rb;
+    private KART kart;
+    private float previousDistance;
+
+    private bool roundFinished;
+    private bool reportedResult;
+
+
+    //start method, called once. This speeds up the scene so it doesnt take as long to collect data.
+    private void Start()
+    {
+        Time.timeScale = 100.0f;
+    }
+
+    public bool RoundFinished => roundFinished;
+
+    //access gameobject components for use.
+    public override void Initialize()
+    {
+        rb = GetComponent<Rigidbody>();
+        kart = GetComponent<KART>();
+        kart.useAgentControls = true;
+
+        if (episodeManager == null)
+            episodeManager = FindObjectOfType<KartEpisodeManager>();
+
+        if (episodeManager != null)
+            episodeManager.RegisterAgent(this);
+    }
+
+    //resets each agents episode to train the NN.
+    public override void OnEpisodeBegin()
+    {
+        if (spawnPoint != null)
+            transform.SetPositionAndRotation(spawnPoint.position, spawnPoint.rotation);
+
+        rb.velocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+
+        kart.agentSteerInput = 0f;
+        kart.agentAccelInput = 0f;
+
+        previousDistance = GetDistanceToTarget();
+        roundFinished = false;
+        reportedResult = false;
+    }
+
+    //the agents 'senses', allows him to see and know where his objective is.
+    public override void CollectObservations(VectorSensor sensor)
+    {
+        Vector3 localVelocity = transform.InverseTransformDirection(rb.velocity);
+
+        Vector3 localTarget = Vector3.zero;
+        if (target != null)
+            localTarget = transform.InverseTransformPoint(target.position);
+
+        sensor.AddObservation(localVelocity.x / maxSpeed);
+        sensor.AddObservation(localVelocity.z / maxSpeed);
+        sensor.AddObservation(rb.angularVelocity.y / maxAngularSpeed);
+
+        sensor.AddObservation(localTarget.x / maxTargetDistance);
+        sensor.AddObservation(localTarget.z / maxTargetDistance);
+
+        sensor.AddObservation(GetDistanceToTarget() / maxTargetDistance);
+    }
+
+    //handles agents inputs.
+    public override void OnActionReceived(ActionBuffers actions)
+    {
+        if (roundFinished)
+        {
+            kart.agentSteerInput = 0f;
+            kart.agentAccelInput = 0f;
+            return;
+        }
+
+        float steer = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
+        float drive = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
+
+        kart.agentSteerInput = steer;
+        kart.agentAccelInput = drive;
+
+        float currentDistance = GetDistanceToTarget();
+        float distanceDelta = previousDistance - currentDistance;
+
+        AddReward(distanceDelta * distanceRewardScale);
+
+        float closenessReward = 1f / (1f + currentDistance);
+        AddReward(closenessReward * closenessRewardScale);
+
+        Vector3 localVelocity = transform.InverseTransformDirection(rb.velocity);
+
+        if (Mathf.Abs(localVelocity.z) < 0.2f && Mathf.Abs(localVelocity.x) < 0.2f)
+            AddReward(stallPenalty);
+
+        AddReward(timePenalty);
+        previousDistance = currentDistance;
+
+        if (MaxStep > 0 && StepCount >= MaxStep - 1)
+            MarkFailed();
+    }
+
+    //for debugging 
+    public override void Heuristic(in ActionBuffers actionsOut)
+    {
+        ActionSegment<float> actions = actionsOut.ContinuousActions;
+        actions[0] = Input.GetAxis("Horizontal");
+        actions[1] = Input.GetAxis("Vertical");
+    }
+
+    //accesses the targets location
+    private float GetDistanceToTarget()
+    {
+        if (target == null) return 0f;
+        return Vector3.Distance(transform.position, target.position);
+    }
+
+    //checks collision for walls.
+    private void OnCollisionEnter(Collision collision)
+    {
+        if (((1 << collision.gameObject.layer) & wallMask.value) != 0)
+            AddReward(wallHitPenalty);
+    }
+
+    //checks if agents reaches target.
+    private void OnTriggerEnter(Collider other)
+    {
+        if (roundFinished) return;
+
+        if (target != null && other.transform == target)
+        {
+            MarkSucceeded();
+        }
+        else if (other.CompareTag("Target"))
+        {
+            MarkSucceeded();
+        }
+    }
+
+    //keeps track of success rate and prints it each episode.
+    private void MarkSucceeded()
+    {
+        if (reportedResult) return;
+
+        AddReward(targetReward);
+        roundFinished = true;
+        reportedResult = true;
+
+        kart.agentSteerInput = 0f;
+        kart.agentAccelInput = 0f;
+        rb.velocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+
+        if (episodeManager != null)
+            episodeManager.ReportResult(true);
+    }
+
+    //same as before
+    private void MarkFailed()
+    {
+        if (reportedResult) return;
+
+        AddReward(failPenalty);
+        roundFinished = true;
+        reportedResult = true;
+
+        kart.agentSteerInput = 0f;
+        kart.agentAccelInput = 0f;
+        rb.velocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+
+        if (episodeManager != null)
+            episodeManager.ReportResult(false);
+    }
+}
